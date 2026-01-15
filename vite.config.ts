@@ -208,6 +208,8 @@ export default defineConfig({
     format: 'es',
   },
   server: {
+    host: '0.0.0.0', // Listen on all network interfaces for mobile app access
+    port: 5173,
     fs: {
       // Allow serving files from the project root
       allow: ['..']

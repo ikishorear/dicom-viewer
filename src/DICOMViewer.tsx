@@ -118,6 +118,86 @@ export default function DICOMViewer() {
     }));
   }, [getTransformations]);
 
+  // Get viewport helper (needed for pinch-to-zoom)
+  const getViewport = useCallback((viewportId?: string): cornerstone.StackViewport | null => {
+    if (!renderingEngineRef.current) return null;
+    const id = viewportId || activeViewportId;
+    try {
+      return renderingEngineRef.current.getViewport(id) as cornerstone.StackViewport;
+    } catch {
+      return null;
+    }
+  }, [activeViewportId]);
+
+  // Pinch-to-zoom handler
+  const setupPinchToZoom = useCallback((viewportId: string, viewportElement: HTMLElement) => {
+    let initialDistance = 0;
+    let initialZoom = 1;
+    let touches: Touch[] = [];
+
+    const getDistance = (touch1: Touch, touch2: Touch): number => {
+      const dx = touch1.clientX - touch2.clientX;
+      const dy = touch1.clientY - touch2.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        touches = Array.from(e.touches);
+        initialDistance = getDistance(touches[0], touches[1]);
+        const viewport = getViewport(viewportId);
+        if (viewport) {
+          const camera = viewport.getCamera();
+          initialZoom = camera.parallelScale || 1;
+        }
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && touches.length === 2) {
+        const currentDistance = getDistance(e.touches[0], e.touches[1]);
+        const scale = initialDistance / currentDistance;
+        const newZoom = initialZoom * scale;
+
+        const viewport = getViewport(viewportId);
+        if (viewport) {
+          try {
+            const newParallelScale = Math.max(0.1, Math.min(1000, newZoom));
+            viewport.setCamera({
+              parallelScale: newParallelScale,
+            });
+            viewport.render();
+          } catch (err) {
+            console.warn('Error setting zoom:', err);
+          }
+        }
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        touches = [];
+        initialDistance = 0;
+        initialZoom = 1;
+      }
+    };
+
+    viewportElement.addEventListener('touchstart', handleTouchStart, { passive: false });
+    viewportElement.addEventListener('touchmove', handleTouchMove, { passive: false });
+    viewportElement.addEventListener('touchend', handleTouchEnd, { passive: false });
+    viewportElement.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+
+    // Return cleanup function
+    return () => {
+      viewportElement.removeEventListener('touchstart', handleTouchStart);
+      viewportElement.removeEventListener('touchmove', handleTouchMove);
+      viewportElement.removeEventListener('touchend', handleTouchEnd);
+      viewportElement.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, [getViewport]);
+
   // Initialize a viewport
   const initializeViewport = useCallback((viewportId: string): boolean => {
     if (!renderingEngineRef.current) return false;
@@ -207,6 +287,9 @@ export default function DICOMViewer() {
           
           viewportElement.style.pointerEvents = 'auto';
           viewportElement.style.touchAction = 'none';
+          
+          // Setup pinch-to-zoom for mobile
+          setupPinchToZoom(viewportId, viewportElement);
         }
       } else {
         toolGroupsRef.current[viewportId] = toolGroup;
@@ -217,19 +300,7 @@ export default function DICOMViewer() {
       console.warn(`Viewport ${viewportId} initialization error:`, error);
       return false;
     }
-  }, []);
-
-  // Get viewport helper
-  const getViewport = useCallback((viewportId?: string): cornerstone.StackViewport | null => {
-    if (!renderingEngineRef.current) return null;
-    const id = viewportId || activeViewportId;
-    try {
-      return renderingEngineRef.current.getViewport(id) as cornerstone.StackViewport;
-    } catch {
-      return null;
-    }
-  }, [activeViewportId]);
-
+  }, [setupPinchToZoom]);
 
   // Handle window resize for mobile detection
   useEffect(() => {
@@ -575,6 +646,9 @@ export default function DICOMViewer() {
             if (viewportElement) {
               viewportElement.style.pointerEvents = 'auto';
               viewportElement.style.touchAction = 'none';
+              
+              // Setup pinch-to-zoom for mobile
+              setupPinchToZoom(viewportId, viewportElement);
             }
           } catch (err) {
             console.warn('Could not activate tools:', err);
@@ -875,6 +949,9 @@ export default function DICOMViewer() {
               if (viewportElement) {
                 viewportElement.style.pointerEvents = 'auto';
                 viewportElement.style.touchAction = 'none';
+                
+                // Setup pinch-to-zoom for mobile
+                setupPinchToZoom(viewportId, viewportElement);
               }
             }
           }
