@@ -95,6 +95,7 @@ export default function DICOMViewer() {
   const [isMobile, setIsMobile] = useState<boolean>(window.innerWidth < 768);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(!isMobile);
   const [bottomPanelOpen, setBottomPanelOpen] = useState<boolean>(true);
+  const [fullScreenMode, setFullScreenMode] = useState<boolean>(false);
 
   // Get transformation for a viewport
   const getTransformations = useCallback((viewportId: string) => {
@@ -129,16 +130,28 @@ export default function DICOMViewer() {
     }
   }, [activeViewportId]);
 
-  // Pinch-to-zoom handler
+  // Enhanced pinch-to-zoom and pan handler for mobile
   const setupPinchToZoom = useCallback((viewportId: string, viewportElement: HTMLElement) => {
     let initialDistance = 0;
     let initialZoom = 1;
     let touches: Touch[] = [];
+    let lastPanPoint: { x: number; y: number } | null = null;
+    let isPinching = false;
+    let isPanning = false;
+    let lastTapTime = 0;
+    let tapCount = 0;
 
     const getDistance = (touch1: Touch, touch2: Touch): number => {
       const dx = touch1.clientX - touch2.clientX;
       const dy = touch1.clientY - touch2.clientY;
       return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const getCenter = (touch1: Touch, touch2: Touch): { x: number; y: number } => {
+      return {
+        x: (touch1.clientX + touch2.clientX) / 2,
+        y: (touch1.clientY + touch2.clientY) / 2,
+      };
     };
 
     const handleTouchStart = (e: TouchEvent) => {
@@ -150,12 +163,53 @@ export default function DICOMViewer() {
           const camera = viewport.getCamera();
           initialZoom = camera.parallelScale || 1;
         }
+        isPinching = true;
+        tapCount = 0; // Reset tap count on two-finger gesture
         e.preventDefault();
+      } else if (e.touches.length === 1) {
+        isPanning = true;
+        lastPanPoint = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        
+        // Double-tap to zoom
+        const currentTime = Date.now();
+        const timeDiff = currentTime - lastTapTime;
+        
+        if (timeDiff < 300 && tapCount === 1) {
+          // Double tap detected
+          const viewport = getViewport(viewportId);
+          if (viewport) {
+            try {
+              const camera = viewport.getCamera();
+              const currentZoom = camera.parallelScale || 1;
+              
+              // Toggle between zoomed in (2x) and reset
+              if (currentZoom > 50) {
+                // Reset zoom
+                viewport.resetCamera();
+              } else {
+                // Zoom in to 2x
+                const newZoom = currentZoom * 0.5; // Smaller parallelScale = more zoom
+                viewport.setCamera({
+                  parallelScale: Math.max(0.1, newZoom),
+                });
+              }
+              viewport.render();
+              tapCount = 0;
+              e.preventDefault();
+              return;
+            } catch (err) {
+              console.warn('Error in double-tap zoom:', err);
+            }
+          }
+        } else {
+          tapCount = 1;
+        }
+        lastTapTime = currentTime;
       }
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && touches.length === 2) {
+      if (e.touches.length === 2 && isPinching) {
         const currentDistance = getDistance(e.touches[0], e.touches[1]);
         const scale = initialDistance / currentDistance;
         const newZoom = initialZoom * scale;
@@ -173,14 +227,60 @@ export default function DICOMViewer() {
           }
         }
         e.preventDefault();
+      } else if (e.touches.length === 1 && isPanning && lastPanPoint) {
+        const viewport = getViewport(viewportId);
+        if (viewport) {
+          try {
+            const deltaX = e.touches[0].clientX - lastPanPoint.x;
+            const deltaY = e.touches[0].clientY - lastPanPoint.y;
+            
+            const camera = viewport.getCamera();
+            const { focalPoint, position } = camera;
+            
+            // Convert screen delta to world delta (approximate)
+            const panSensitivity = 0.5;
+            const newFocalPoint = [
+              focalPoint[0] - deltaX * panSensitivity,
+              focalPoint[1] + deltaY * panSensitivity, // Y is inverted in screen coordinates
+              focalPoint[2],
+            ];
+            const newPosition = [
+              position[0] - deltaX * panSensitivity,
+              position[1] + deltaY * panSensitivity,
+              position[2],
+            ];
+            
+            viewport.setCamera({
+              focalPoint: newFocalPoint as [number, number, number],
+              position: newPosition as [number, number, number],
+            });
+            viewport.render();
+          } catch (err) {
+            console.warn('Error panning:', err);
+          }
+        }
+        lastPanPoint = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        e.preventDefault();
       }
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2) {
+        isPinching = false;
         touches = [];
         initialDistance = 0;
         initialZoom = 1;
+      }
+      if (e.touches.length === 0) {
+        isPanning = false;
+        lastPanPoint = null;
+        
+        // Reset tap count after delay
+        setTimeout(() => {
+          if (Date.now() - lastTapTime > 300) {
+            tapCount = 0;
+          }
+        }, 300);
       }
     };
 
@@ -302,7 +402,7 @@ export default function DICOMViewer() {
     }
   }, [setupPinchToZoom]);
 
-  // Handle window resize for mobile detection
+  // Handle window resize for mobile detection and viewport updates
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 768;
@@ -310,9 +410,26 @@ export default function DICOMViewer() {
       if (mobile) {
         setSidebarOpen(false);
       }
+      
+      // Resize all viewports when window size changes
+      if (renderingEngineRef.current) {
+        setTimeout(() => {
+          try {
+            renderingEngineRef.current?.resize();
+          } catch (err) {
+            console.warn('Error resizing viewports:', err);
+          }
+        }, 100);
+      }
     };
+    
     window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+    };
   }, []);
 
   /**
@@ -593,7 +710,7 @@ export default function DICOMViewer() {
         setWindowCenter(50);
       }
       
-      // Load series into all target viewports
+        // Load series into all target viewports
       for (const viewportId of targetViewports) {
         const vp = getViewport(viewportId);
         if (!vp) continue;
@@ -625,6 +742,7 @@ export default function DICOMViewer() {
         if (toolGroup) {
           try {
             // Enable tools for independent interaction in each viewport
+            // On mobile, we handle touch events manually, so we keep mouse bindings for desktop
             toolGroup.setToolActive(WindowLevelTool.toolName, {
               bindings: [{ mouseButton: toolEnums.MouseBindings.Primary }],
             });
@@ -647,8 +765,19 @@ export default function DICOMViewer() {
               viewportElement.style.pointerEvents = 'auto';
               viewportElement.style.touchAction = 'none';
               
-              // Setup pinch-to-zoom for mobile
+              // Setup enhanced pinch-to-zoom and pan for mobile
               setupPinchToZoom(viewportId, viewportElement);
+              
+              // Resize viewport after loading
+              setTimeout(() => {
+                if (renderingEngineRef.current) {
+                  try {
+                    renderingEngineRef.current.resize();
+                  } catch (err) {
+                    console.warn('Error resizing after load:', err);
+                  }
+                }
+              }, 100);
             }
           } catch (err) {
             console.warn('Could not activate tools:', err);
@@ -1020,12 +1149,37 @@ export default function DICOMViewer() {
         const viewportId = `viewport-${i}`;
         initializeViewport(viewportId);
       }
+      
+      // Resize all viewports after initialization
+      setTimeout(() => {
+        if (renderingEngineRef.current) {
+          try {
+            renderingEngineRef.current.resize();
+          } catch (err) {
+            console.warn('Error resizing viewports:', err);
+          }
+        }
+      }, 150);
     };
     
     // Initialize after a short delay to ensure refs are set
     const timeout = setTimeout(initializeViewports, 100);
     return () => clearTimeout(timeout);
   }, [paneLayout, initializeViewport]);
+  
+  // Resize viewports when full screen mode changes
+  useEffect(() => {
+    if (renderingEngineRef.current) {
+      const timeout = setTimeout(() => {
+        try {
+          renderingEngineRef.current?.resize();
+        } catch (err) {
+          console.warn('Error resizing on fullscreen change:', err);
+        }
+      }, 200);
+      return () => clearTimeout(timeout);
+    }
+  }, [fullScreenMode]);
 
   // Update pane layout
   useEffect(() => {
@@ -1035,16 +1189,28 @@ export default function DICOMViewer() {
     }
   }, [paneLayout, activeViewportId]);
 
-  // Get grid layout class
+  // Get grid layout class - optimized for mobile
   const getGridClass = useMemo(() => {
-    switch (paneLayout) {
-      case 1: return 'grid-cols-1 grid-rows-1';
-      case 2: return 'grid-cols-1 md:grid-cols-2 grid-rows-2 md:grid-rows-1';
-      case 3: return 'grid-cols-1 md:grid-cols-2 grid-rows-3 md:grid-rows-2';
-      case 4: return 'grid-cols-1 md:grid-cols-2 grid-rows-4 md:grid-rows-2';
-      default: return 'grid-cols-1 grid-rows-1';
+    if (isMobile) {
+      // Mobile: Always vertical stack for better visibility
+      switch (paneLayout) {
+        case 1: return 'grid-cols-1 grid-rows-1';
+        case 2: return 'grid-cols-1 grid-rows-2';
+        case 3: return 'grid-cols-1 grid-rows-3';
+        case 4: return 'grid-cols-1 grid-rows-4';
+        default: return 'grid-cols-1 grid-rows-1';
+      }
+    } else {
+      // Desktop: Use grid layout
+      switch (paneLayout) {
+        case 1: return 'grid-cols-1 grid-rows-1';
+        case 2: return 'grid-cols-2 grid-rows-1';
+        case 3: return 'grid-cols-2 grid-rows-2';
+        case 4: return 'grid-cols-2 grid-rows-2';
+        default: return 'grid-cols-1 grid-rows-1';
+      }
     }
-  }, [paneLayout]);
+  }, [paneLayout, isMobile]);
 
   // Get active viewport image count dynamically
   const getActiveViewportImageCount = useCallback(() => {
@@ -1062,13 +1228,43 @@ export default function DICOMViewer() {
   const isMultiStack = activeViewportImageCount > 1;
   const activeTransforms = getTransformations(activeViewportId);
 
+  // Toggle full screen mode
+  const toggleFullScreen = useCallback(() => {
+    setFullScreenMode(prev => !prev);
+    if (fullScreenMode) {
+      setBottomPanelOpen(true);
+    }
+    // Resize viewports after mode change
+    setTimeout(() => {
+      if (renderingEngineRef.current) {
+        try {
+          renderingEngineRef.current.resize();
+        } catch (err) {
+          console.warn('Error resizing viewports:', err);
+        }
+      }
+    }, 100);
+  }, [fullScreenMode]);
+
   return (
-    <div className="w-full h-screen flex bg-gray-900 text-white overflow-hidden">
+    <div 
+      className={`w-full h-screen flex bg-gray-900 text-white overflow-hidden ${fullScreenMode ? 'fixed inset-0 z-[9999]' : ''}`}
+      style={{
+        height: fullScreenMode ? '100vh' : '100vh',
+        height: fullScreenMode ? '100dvh' : '100dvh', // Dynamic viewport height for mobile
+        paddingTop: isMobile && !fullScreenMode ? 'env(safe-area-inset-top)' : '0',
+        paddingBottom: isMobile && !fullScreenMode ? 'env(safe-area-inset-bottom)' : '0',
+      }}
+    >
       {/* Mobile Menu Button */}
-      {isMobile && (
+      {isMobile && !fullScreenMode && (
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="fixed top-2 left-2 z-50 p-2 bg-gray-800 rounded-md md:hidden"
+          className="fixed top-2 left-2 z-50 p-3 bg-gray-800/90 backdrop-blur-sm rounded-lg md:hidden shadow-lg touch-manipulation"
+          style={{ 
+            top: `calc(env(safe-area-inset-top) + 0.5rem)`,
+            touchAction: 'manipulation'
+          }}
           aria-label="Toggle menu"
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1076,9 +1272,53 @@ export default function DICOMViewer() {
           </svg>
         </button>
       )}
+      
+            {/* Full Screen Toggle Button - Mobile */}
+      {isMobile && (
+        <button
+          onClick={toggleFullScreen}
+          className={`fixed ${fullScreenMode ? 'top-2 right-2' : 'top-2 right-2'} z-50 p-3 bg-gray-800/90 backdrop-blur-sm rounded-lg md:hidden shadow-lg touch-manipulation min-h-[44px] min-w-[44px] flex items-center justify-center`}
+          style={{ 
+            top: fullScreenMode ? '0.5rem' : `calc(env(safe-area-inset-top) + 0.5rem)`,
+            right: fullScreenMode ? '0.5rem' : `calc(env(safe-area-inset-right) + 0.5rem)`,
+            touchAction: 'manipulation'
+          }}
+          aria-label={fullScreenMode ? "Exit full screen" : "Enter full screen"}
+        >
+          {fullScreenMode ? (
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+          )}
+        </button>
+      )}
+      
+      {/* Full Screen Info - Mobile */}
+      {isMobile && fullScreenMode && (
+        <div className="fixed top-2 left-2 z-50 px-3 py-2 bg-gray-800/90 backdrop-blur-sm rounded-lg text-xs text-gray-300 touch-manipulation"
+          style={{ 
+            top: '0.5rem',
+            left: '0.5rem',
+            touchAction: 'manipulation'
+          }}
+        >
+          Double-tap to zoom | Pinch to zoom | Drag to pan
+        </div>
+      )}
 
       {/* Left Sidebar - Series List */}
-      <div className={`${isMobile ? 'fixed' : 'relative'} ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} z-40 w-64 bg-gray-800 border-r border-gray-700 flex flex-col transition-transform duration-300 ease-in-out md:translate-x-0 h-full`}>
+      {(!fullScreenMode || !isMobile) && (
+      <div className={`${isMobile ? 'fixed' : 'relative'} ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} z-40 w-64 bg-gray-800 border-r border-gray-700 flex flex-col transition-transform duration-300 ease-in-out md:translate-x-0 h-full`}
+        style={{
+          height: isMobile ? '100dvh' : '100%',
+          paddingTop: isMobile ? 'env(safe-area-inset-top)' : '0',
+          paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0',
+        }}
+      >
         <div className="p-4 border-b border-gray-700 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-bold">DICOM Series</h2>
@@ -1137,10 +1377,18 @@ export default function DICOMViewer() {
           )}
         </div>
       </div>
+      )}
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div 
+        className="flex-1 flex flex-col overflow-hidden"
+        style={{
+          width: fullScreenMode && isMobile ? '100vw' : '100%',
+          height: fullScreenMode && isMobile ? '100dvh' : '100%',
+        }}
+      >
         {/* Top Toolbar - Desktop */}
+        {!fullScreenMode && (
         <div className="hidden md:block bg-gray-800 border-b border-gray-700 p-2 md:p-3">
           <div className="flex flex-wrap gap-1 md:gap-2 items-center text-xs md:text-sm">
             {/* Rotate Controls */}
@@ -1340,9 +1588,20 @@ export default function DICOMViewer() {
             </div>
           )}
         </div>
+        )}
 
         {/* Viewport Grid */}
-        <div className={`flex-1 bg-black p-2 md:p-4 grid ${getGridClass} gap-2 md:gap-4 overflow-auto`}>
+        <div 
+          className={`flex-1 bg-black grid ${getGridClass} overflow-hidden ${fullScreenMode ? 'p-0' : 'p-2 md:p-4'} ${fullScreenMode ? 'gap-0' : 'gap-2 md:gap-4'}`}
+          style={{
+            height: fullScreenMode && isMobile 
+              ? '100dvh' 
+              : isMobile && bottomPanelOpen 
+                ? `calc(100vh - ${fullScreenMode ? 0 : 320}px - env(safe-area-inset-bottom))`
+                : '100%',
+            minHeight: isMobile ? '0' : '300px',
+          }}
+        >
           {[1, 2, 3, 4].map((num) => {
             if (num > paneLayout) return null;
             const viewportId = `viewport-${num}`;
@@ -1368,11 +1627,28 @@ export default function DICOMViewer() {
                     if (el && renderingEngineRef.current) {
                       setTimeout(() => {
                         initializeViewport(viewportId);
+                        // Resize viewport after initialization
+                        setTimeout(() => {
+                          if (renderingEngineRef.current) {
+                            try {
+                              renderingEngineRef.current.resize();
+                            } catch (err) {
+                              console.warn('Error resizing viewport:', err);
+                            }
+                          }
+                        }, 50);
                       }, 0);
                     }
                   }}
-                  className="w-full h-full min-h-[200px] md:min-h-[300px] viewport-container"
-                  style={{ touchAction: 'none', pointerEvents: 'auto' }}
+                  className="w-full h-full viewport-container"
+                  style={{ 
+                    touchAction: 'none', 
+                    pointerEvents: 'auto',
+                    minHeight: isMobile ? '200px' : '300px',
+                    width: '100%',
+                    height: '100%',
+                    position: 'relative',
+                  }}
                   onClick={(e) => {
                     // Prevent container click when clicking on viewport
                     e.stopPropagation();
@@ -1397,12 +1673,14 @@ export default function DICOMViewer() {
         </div>
 
         {/* Instructions - Desktop */}
+        {!fullScreenMode && (
         <div className="bg-gray-800 border-t border-gray-700 p-1 md:p-2 text-xs text-gray-400 text-center hidden md:block">
           Left Click: W/L | Middle: Pan | Right: Zoom | Wheel: Scroll | ↑↓: Navigate
         </div>
+        )}
 
         {/* Toggle Button - Mobile - Shows when panel is hidden */}
-        {!bottomPanelOpen && isMobile && (
+        {!bottomPanelOpen && isMobile && !fullScreenMode && (
           <button
             onClick={(e) => {
               e.preventDefault();
@@ -1410,7 +1688,11 @@ export default function DICOMViewer() {
               setBottomPanelOpen(true);
             }}
             className="fixed bottom-4 right-4 z-50 p-4 bg-blue-600 text-white rounded-full shadow-lg active:bg-blue-700 min-h-[56px] min-w-[56px] flex items-center justify-center touch-manipulation"
-            style={{ touchAction: 'manipulation' }}
+            style={{ 
+              touchAction: 'manipulation',
+              bottom: `calc(env(safe-area-inset-bottom) + 1rem)`,
+              right: `calc(env(safe-area-inset-right) + 1rem)`,
+            }}
             aria-label="Show controls"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1420,8 +1702,14 @@ export default function DICOMViewer() {
         )}
 
         {/* Bottom Toolbar - Mobile - Touch-Optimized */}
-        {bottomPanelOpen && (
-          <div className="md:hidden bg-gray-800 border-t border-gray-700 p-4 pb-6 shadow-2xl" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}>
+        {bottomPanelOpen && !fullScreenMode && (
+          <div 
+            className="md:hidden bg-gray-800/95 backdrop-blur-sm border-t border-gray-700 p-4 shadow-2xl overflow-y-auto max-h-[50vh]"
+            style={{ 
+              paddingBottom: `max(1.5rem, calc(env(safe-area-inset-bottom) + 1rem))`,
+              paddingTop: '1rem',
+            }}
+          >
             {/* Toggle Button - Hide Panel */}
             <div className="flex justify-end mb-2">
               <button

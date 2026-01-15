@@ -12,6 +12,72 @@ button:active {
   user-select: none;
 }
 
+/* Ensure viewports are always visible and not clipped */
+.viewport-container {
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-container canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+/* Mobile-specific optimizations */
+@media (max-width: 767px) {
+  /* Prevent viewport clipping */
+  .viewport-container {
+    min-height: 200px;
+    max-height: 100vh;
+  }
+  
+  /* Ensure full viewport usage */
+  body {
+    overflow: hidden;
+    position: fixed;
+    width: 100%;
+    height: 100%;
+  }
+  
+  /* Better touch targets */
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Prevent text selection during touch interactions */
+  * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  
+  /* Allow text selection in specific areas */
+  input, textarea, select {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+/* Full screen mode optimizations */
+.fullscreen-mode {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh; /* Dynamic viewport height */
+}
+
 /* Range slider styling - filled track for all devices */
 input[type="range"] {
   --fill-percentage: 0%;
