@@ -29,7 +29,7 @@ button:active {
   image-rendering: pixelated;
 }
 
-/* Mobile-specific optimizations */
+/* Mobile-specific optimizations - Enhanced for React Native WebView */
 @media (max-width: 767px) {
   /* Prevent viewport clipping */
   .viewport-container {
@@ -43,12 +43,15 @@ button:active {
     position: fixed;
     width: 100%;
     height: 100%;
+    -webkit-overflow-scrolling: touch;
   }
   
-  /* Better touch targets */
+  /* Better touch targets - Minimum 44x44px for accessibility */
   button {
     min-height: 44px;
     min-width: 44px;
+    padding: 0.75rem;
+    font-size: 1rem;
   }
   
   /* Prevent text selection during touch interactions */
@@ -62,6 +65,27 @@ button:active {
   input, textarea, select {
     -webkit-user-select: text;
     user-select: text;
+  }
+  
+  /* Improve responsiveness for React Native */
+  html, body, #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  
+  /* Better scrolling for mobile */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  /* Optimize rendering performance */
+  .viewport-container canvas {
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    will-change: transform;
   }
 }
 
@@ -87,15 +111,34 @@ input[type="range"] {
   cursor: pointer;
 }
 
-/* Track styling with filled portion */
+/* Track styling with filled portion - White progress mark */
 input[type="range"]::-webkit-slider-track {
+  background: #374151;
+  height: 6px;
+  border-radius: 3px;
+  position: relative;
+}
+
+/* New contrast slider design - White progress indicator on track */
+input[type="range"].contrast-slider::-webkit-slider-track {
   background: linear-gradient(
     to right,
     #ffffff var(--fill-percentage),
-    #374151 var(--fill-percentage)
+    #4b5563 var(--fill-percentage)
   );
-  height: 6px;
-  border-radius: 3px;
+  height: 8px;
+  border-radius: 0.5rem;
+}
+
+/* Mobile contrast slider - White progress indicator on track */
+input[type="range"].contrast-slider-mobile::-webkit-slider-track {
+  background: linear-gradient(
+    to right,
+    #ffffff var(--fill-percentage),
+    #4b5563 var(--fill-percentage)
+  );
+  height: 12px;
+  border-radius: 0.5rem;
 }
 
 input[type="range"]::-moz-range-track {
@@ -104,14 +147,39 @@ input[type="range"]::-moz-range-track {
   border-radius: 3px;
 }
 
-/* Filled portion for Firefox */
+/* Filled portion for Firefox - White progress */
 input[type="range"]::-moz-range-progress {
   background: #ffffff;
   height: 6px;
   border-radius: 3px;
 }
 
-/* Thumb styling */
+/* Firefox contrast slider */
+input[type="range"].contrast-slider::-moz-range-track {
+  background: #4b5563;
+  height: 8px;
+  border-radius: 0.5rem;
+}
+
+input[type="range"].contrast-slider::-moz-range-progress {
+  background: #ffffff;
+  height: 8px;
+  border-radius: 0.5rem;
+}
+
+input[type="range"].contrast-slider-mobile::-moz-range-track {
+  background: #4b5563;
+  height: 12px;
+  border-radius: 0.5rem;
+}
+
+input[type="range"].contrast-slider-mobile::-moz-range-progress {
+  background: #ffffff;
+  height: 12px;
+  border-radius: 0.5rem;
+}
+
+/* Thumb styling - Blue for better visibility */
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -122,7 +190,32 @@ input[type="range"]::-webkit-slider-thumb {
   border: 2px solid #ffffff;
   cursor: pointer;
   margin-top: -6px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  z-index: 1;
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+  background: #2563eb;
+}
+
+/* Contrast slider thumb - White for visibility */
+input[type="range"].contrast-slider::-webkit-slider-thumb {
+  height: 20px;
+  width: 20px;
+  margin-top: -6px;
+  background: #ffffff;
+  border: 2px solid #3b82f6;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+input[type="range"].contrast-slider-mobile::-webkit-slider-thumb {
+  height: 24px;
+  width: 24px;
+  margin-top: -6px;
+  background: #ffffff;
+  border: 3px solid #3b82f6;
 }
 
 input[type="range"]::-moz-range-thumb {

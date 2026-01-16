@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
+import Slider from '@mui/material/Slider';
+import { styled } from '@mui/material/styles';
 
 // Initialize Cornerstone
 const { init, RenderingEngine } = cornerstone;
@@ -27,6 +29,60 @@ interface Series {
 type Orientation = 'Axial' | 'Coronal' | 'Sagittal' | 'Acquisition';
 type PaneLayout = 1 | 2 | 3 | 4;
 
+// Styled Material UI Slider with white track
+const WhiteSlider = styled(Slider)(({ theme }) => ({
+  color: '#ffffff',
+  height: 8,
+  '& .MuiSlider-track': {
+    border: 'none',
+    backgroundColor: '#ffffff',
+  },
+  '& .MuiSlider-thumb': {
+    width: 20,
+    height: 20,
+    backgroundColor: '#ffffff',
+    border: '2px solid #3b82f6',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.5)',
+    '&:hover': {
+      boxShadow: '0 3px 8px rgba(0, 0, 0, 0.6)',
+    },
+    '&.Mui-active': {
+      boxShadow: '0 4px 10px rgba(0, 0, 0, 0.7)',
+    },
+  },
+  '& .MuiSlider-rail': {
+    backgroundColor: '#4b5563',
+    opacity: 1,
+  },
+}));
+
+// Mobile styled slider
+const WhiteSliderMobile = styled(Slider)(({ theme }) => ({
+  color: '#ffffff',
+  height: 12,
+  '& .MuiSlider-track': {
+    border: 'none',
+    backgroundColor: '#ffffff',
+  },
+  '& .MuiSlider-thumb': {
+    width: 24,
+    height: 24,
+    backgroundColor: '#ffffff',
+    border: '3px solid #3b82f6',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.5)',
+    '&:hover': {
+      boxShadow: '0 3px 8px rgba(0, 0, 0, 0.6)',
+    },
+    '&.Mui-active': {
+      boxShadow: '0 4px 10px rgba(0, 0, 0, 0.7)',
+    },
+  },
+  '& .MuiSlider-rail': {
+    backgroundColor: '#4b5563',
+    opacity: 1,
+  },
+}));
+
 /**
  * Production-ready DICOM Viewer Component
  * Mobile-friendly, responsive, with all requested features
@@ -35,7 +91,7 @@ export default function DICOMViewer() {
   const viewportRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
   const renderingEngineRef = useRef<cornerstone.RenderingEngine | null>(null);
   const toolGroupsRef = useRef<{ [key: string]: ReturnType<typeof ToolGroupManager.createToolGroup> | null }>({});
-  const cineIntervalRef = useRef<number | null>(null);
+  const cineIntervalRef = useRef<{ [viewportId: string]: number | null }>({});
   const loadedSeriesRef = useRef<Series | null>(null);
   
   // State
@@ -62,7 +118,7 @@ export default function DICOMViewer() {
   
   // Multi-stack features
   const [orientation, setOrientation] = useState<Orientation>('Axial');
-  const [isCinePlaying, setIsCinePlaying] = useState<boolean>(false);
+  const [isCinePlaying, setIsCinePlaying] = useState<{ [viewportId: string]: boolean }>({});
   const [cineSpeed] = useState<number>(10);
   
   // Map series to orientations
@@ -95,7 +151,6 @@ export default function DICOMViewer() {
   const [isMobile, setIsMobile] = useState<boolean>(window.innerWidth < 768);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(!isMobile);
   const [bottomPanelOpen, setBottomPanelOpen] = useState<boolean>(true);
-  const [fullScreenMode, setFullScreenMode] = useState<boolean>(false);
 
   // Get transformation for a viewport
   const getTransformations = useCallback((viewportId: string) => {
@@ -130,17 +185,28 @@ export default function DICOMViewer() {
     }
   }, [activeViewportId]);
 
-  // Enhanced pinch-to-zoom and pan handler for mobile
-  const setupPinchToZoom = useCallback((viewportId: string, viewportElement: HTMLElement) => {
-    let initialDistance = 0;
-    let initialZoom = 1;
-    let touches: Touch[] = [];
-    let lastPanPoint: { x: number; y: number } | null = null;
-    let isPinching = false;
-    let isPanning = false;
-    let lastTapTime = 0;
-    let tapCount = 0;
+  // Store the initial "fit" parallel scale for each viewport (set by resetCamera)
+  const fitParallelScaleRef = useRef<{ [key: string]: number }>({});
 
+  /**
+   * Simple Zoom-Only Handler
+   * 
+   * This implementation provides:
+   * - Pinch-to-zoom centered on gesture focal point
+   * - Image stays fixed/centered
+   * - Zoom in only (no zoom out beyond fit)
+   * - Double-tap to reset zoom
+   * 
+   * Focal Point Zoom:
+   * - When zooming, the point under the pinch center stays fixed
+   * - Formula: newFocalPoint = oldFocalPoint + (worldPoint - oldFocalPoint) * (1 - 1/scaleFactor)
+   */
+  const setupPinchToZoom = useCallback((viewportId: string, viewportElement: HTMLElement) => {
+    // Configuration
+    const MIN_SCALE = 1; // Fit to window (minimum zoom)
+    const MAX_SCALE = 5; // Maximum zoom (5x)
+    
+    // Helper functions
     const getDistance = (touch1: Touch, touch2: Touch): number => {
       const dx = touch1.clientX - touch2.clientX;
       const dy = touch1.clientY - touch2.clientY;
@@ -154,52 +220,104 @@ export default function DICOMViewer() {
       };
     };
 
+    const getCanvasCoordinates = (screenX: number, screenY: number): { x: number; y: number } => {
+      const canvas = viewportElement.querySelector('canvas');
+      if (!canvas) {
+        const rect = viewportElement.getBoundingClientRect();
+        return { x: screenX - rect.left, y: screenY - rect.top };
+      }
+      const canvasRect = canvas.getBoundingClientRect();
+      return {
+        x: screenX - canvasRect.left,
+        y: screenY - canvasRect.top,
+      };
+    };
+
+    /**
+     * Calculate current scale from parallelScale
+     * Scale = fitParallelScale / currentParallelScale
+     */
+    const getCurrentScale = (): number => {
+      const viewport = getViewport(viewportId);
+      if (!viewport) return MIN_SCALE;
+      try {
+        const camera = viewport.getCamera();
+        const currentParallelScale = camera.parallelScale || 1;
+        const fitScale = fitParallelScaleRef.current[viewportId] || currentParallelScale;
+        return Math.max(MIN_SCALE, fitScale / currentParallelScale);
+      } catch (err) {
+        return MIN_SCALE;
+      }
+    };
+
+    // Gesture state
+    let initialDistance = 0;
+    let initialParallelScale = 1;
+    let touches: Touch[] = [];
+    let isPinching = false;
+    let lastTapTime = 0;
+    let tapCount = 0;
+    let pinchCenterCanvas: { x: number; y: number } | null = null;
+    let worldPointAtPinchCenter: [number, number, number] | null = null;
+    let initialCamera: { parallelScale: number; focalPoint: [number, number, number]; position: [number, number, number] } | null = null;
+
     const handleTouchStart = (e: TouchEvent) => {
+      const viewport = getViewport(viewportId);
+      if (!viewport) return;
+
       if (e.touches.length === 2) {
         touches = Array.from(e.touches);
         initialDistance = getDistance(touches[0], touches[1]);
-        const viewport = getViewport(viewportId);
-        if (viewport) {
+        const center = getCenter(touches[0], touches[1]);
+        pinchCenterCanvas = getCanvasCoordinates(center.x, center.y);
+        
+        try {
           const camera = viewport.getCamera();
-          initialZoom = camera.parallelScale || 1;
+          initialParallelScale = camera.parallelScale || 1;
+          initialCamera = {
+            parallelScale: camera.parallelScale,
+            focalPoint: [...camera.focalPoint] as [number, number, number],
+            position: [...camera.position] as [number, number, number],
+          };
+          
+          // Get the world point at the pinch center - this is what we want to keep fixed
+          worldPointAtPinchCenter = viewport.canvasToWorld([pinchCenterCanvas.x, pinchCenterCanvas.y]) as [number, number, number];
+          
+          // Store the fit scale if not already stored (this is the maximum zoom-out limit)
+          if (!fitParallelScaleRef.current[viewportId]) {
+            fitParallelScaleRef.current[viewportId] = initialParallelScale;
+          }
+        } catch (err) {
+          console.warn('Error getting initial camera:', err);
+          return;
         }
+        
         isPinching = true;
-        tapCount = 0; // Reset tap count on two-finger gesture
+        tapCount = 0;
         e.preventDefault();
       } else if (e.touches.length === 1) {
-        isPanning = true;
-        lastPanPoint = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-        
-        // Double-tap to zoom
+        // Double-tap to reset zoom
         const currentTime = Date.now();
         const timeDiff = currentTime - lastTapTime;
         
         if (timeDiff < 300 && tapCount === 1) {
-          // Double tap detected
-          const viewport = getViewport(viewportId);
-          if (viewport) {
-            try {
-              const camera = viewport.getCamera();
-              const currentZoom = camera.parallelScale || 1;
-              
-              // Toggle between zoomed in (2x) and reset
-              if (currentZoom > 50) {
-                // Reset zoom
-                viewport.resetCamera();
-              } else {
-                // Zoom in to 2x
-                const newZoom = currentZoom * 0.5; // Smaller parallelScale = more zoom
-                viewport.setCamera({
-                  parallelScale: Math.max(0.1, newZoom),
-                });
-              }
+          try {
+            const camera = viewport.getCamera();
+            const currentZoom = camera.parallelScale || 1;
+            const fitScale = fitParallelScaleRef.current[viewportId] || currentZoom;
+            
+            // If zoomed in, reset to fit
+            if (currentZoom < fitScale) {
+              viewport.resetCamera();
+              const resetCamera = viewport.getCamera();
+              fitParallelScaleRef.current[viewportId] = resetCamera.parallelScale;
               viewport.render();
-              tapCount = 0;
-              e.preventDefault();
-              return;
-            } catch (err) {
-              console.warn('Error in double-tap zoom:', err);
             }
+            tapCount = 0;
+            e.preventDefault();
+            return;
+          } catch (err) {
+            console.warn('Error in double-tap reset:', err);
           }
         } else {
           tapCount = 1;
@@ -209,57 +327,65 @@ export default function DICOMViewer() {
     };
 
     const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && isPinching) {
-        const currentDistance = getDistance(e.touches[0], e.touches[1]);
-        const scale = initialDistance / currentDistance;
-        const newZoom = initialZoom * scale;
+      const viewport = getViewport(viewportId);
+      if (!viewport) return;
 
-        const viewport = getViewport(viewportId);
-        if (viewport) {
-          try {
-            const newParallelScale = Math.max(0.1, Math.min(1000, newZoom));
+      if (e.touches.length === 2 && isPinching && pinchCenterCanvas && worldPointAtPinchCenter && initialCamera) {
+        const currentDistance = getDistance(e.touches[0], e.touches[1]);
+        const scale = currentDistance / initialDistance;
+        
+        // Get the fit scale (maximum zoom-out limit) - never zoom out beyond initial fit
+        let fitScale = fitParallelScaleRef.current[viewportId];
+        if (!fitScale) {
+          fitScale = initialParallelScale;
+          fitParallelScaleRef.current[viewportId] = fitScale;
+        }
+        
+        // Calculate desired new scale based on pinch gesture
+        // scale > 1 means pinching out (zoom in), scale < 1 means pinching in (zoom out)
+        // In Cornerstone: smaller parallelScale = zoomed in, larger parallelScale = zoomed out
+        const desiredParallelScale = initialParallelScale / scale;
+        
+        // Constrain zoom: 
+        // - Never zoom out beyond fit scale (initial "fit to window" scale)
+        // - Maximum zoom in: fitScale / MAX_SCALE
+        const minParallelScale = fitScale / MAX_SCALE; // Maximum zoom in
+        const maxParallelScale = fitScale; // Never zoom out beyond fit
+        const newParallelScale = Math.max(minParallelScale, Math.min(maxParallelScale, desiredParallelScale));
+
+        try {
+          // If trying to zoom out beyond fit, stop
+          if (newParallelScale >= fitScale && desiredParallelScale > fitScale) {
+            return;
+          }
+          
+          // Zoom: adjust focal point to keep pinch center fixed
+          // Formula: newFocalPoint = oldFocalPoint + (worldPoint - oldFocalPoint) * (1 - 1/scaleFactor)
+          const scaleFactor = initialParallelScale / newParallelScale;
+          
+          const offsetFromInitialFocal = [
+            worldPointAtPinchCenter[0] - initialCamera.focalPoint[0],
+            worldPointAtPinchCenter[1] - initialCamera.focalPoint[1],
+            worldPointAtPinchCenter[2] - initialCamera.focalPoint[2],
+          ];
+          
+          const newFocalPoint: [number, number, number] = [
+            initialCamera.focalPoint[0] + offsetFromInitialFocal[0] * (1 - 1 / scaleFactor),
+            initialCamera.focalPoint[1] + offsetFromInitialFocal[1] * (1 - 1 / scaleFactor),
+            initialCamera.focalPoint[2] + offsetFromInitialFocal[2] * (1 - 1 / scaleFactor),
+          ];
+          
+          const currentCamera = viewport.getCamera();
+          
             viewport.setCamera({
               parallelScale: newParallelScale,
+            focalPoint: newFocalPoint,
+            position: currentCamera.position,
             });
             viewport.render();
           } catch (err) {
             console.warn('Error setting zoom:', err);
-          }
         }
-        e.preventDefault();
-      } else if (e.touches.length === 1 && isPanning && lastPanPoint) {
-        const viewport = getViewport(viewportId);
-        if (viewport) {
-          try {
-            const deltaX = e.touches[0].clientX - lastPanPoint.x;
-            const deltaY = e.touches[0].clientY - lastPanPoint.y;
-            
-            const camera = viewport.getCamera();
-            const { focalPoint, position } = camera;
-            
-            // Convert screen delta to world delta (approximate)
-            const panSensitivity = 0.5;
-            const newFocalPoint = [
-              focalPoint[0] - deltaX * panSensitivity,
-              focalPoint[1] + deltaY * panSensitivity, // Y is inverted in screen coordinates
-              focalPoint[2],
-            ];
-            const newPosition = [
-              position[0] - deltaX * panSensitivity,
-              position[1] + deltaY * panSensitivity,
-              position[2],
-            ];
-            
-            viewport.setCamera({
-              focalPoint: newFocalPoint as [number, number, number],
-              position: newPosition as [number, number, number],
-            });
-            viewport.render();
-          } catch (err) {
-            console.warn('Error panning:', err);
-          }
-        }
-        lastPanPoint = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         e.preventDefault();
       }
     };
@@ -269,13 +395,13 @@ export default function DICOMViewer() {
         isPinching = false;
         touches = [];
         initialDistance = 0;
-        initialZoom = 1;
+        initialParallelScale = 1;
+        pinchCenterCanvas = null;
+        worldPointAtPinchCenter = null;
+        initialCamera = null;
       }
+      
       if (e.touches.length === 0) {
-        isPanning = false;
-        lastPanPoint = null;
-        
-        // Reset tap count after delay
         setTimeout(() => {
           if (Date.now() - lastTapTime > 300) {
             tapCount = 0;
@@ -316,16 +442,14 @@ export default function DICOMViewer() {
           if (!toolGroup) {
             toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
             if (toolGroup) {
-              toolGroup.addTool(WindowLevelTool.toolName);
               toolGroup.addTool(PanTool.toolName);
               toolGroup.addTool(ZoomTool.toolName);
               toolGroup.addTool(StackScrollTool.toolName);
+          // Don't add WindowLevelTool - it's disabled (contrast via slider only)
               toolGroup.addViewport(viewportId, 'myRenderingEngine');
               toolGroupsRef.current[viewportId] = toolGroup;
               
-              toolGroup.setToolActive(WindowLevelTool.toolName, {
-                bindings: [{ mouseButton: toolEnums.MouseBindings.Primary }],
-              });
+          // Enable pan, zoom and scroll
               toolGroup.setToolActive(PanTool.toolName, {
                 bindings: [{ mouseButton: toolEnums.MouseBindings.Auxiliary }],
               });
@@ -361,10 +485,9 @@ export default function DICOMViewer() {
       if (!toolGroup) {
         toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
         if (toolGroup) {
-          toolGroup.addTool(WindowLevelTool.toolName);
-          toolGroup.addTool(PanTool.toolName);
           toolGroup.addTool(ZoomTool.toolName);
           toolGroup.addTool(StackScrollTool.toolName);
+          // Don't add WindowLevelTool or PanTool - they're disabled
           toolGroup.addViewport(viewportId, 'myRenderingEngine');
           toolGroupsRef.current[viewportId] = toolGroup;
           
@@ -710,7 +833,7 @@ export default function DICOMViewer() {
         setWindowCenter(50);
       }
       
-        // Load series into all target viewports
+      // Load series into all target viewports
       for (const viewportId of targetViewports) {
         const vp = getViewport(viewportId);
         if (!vp) continue;
@@ -730,6 +853,19 @@ export default function DICOMViewer() {
         await vp.setStack(sortedImageIds);
         vp.resetCamera();
         
+        // Store the fit parallel scale (this is the maximum zoom-out limit)
+        // Wait a bit for camera to settle after reset
+        setTimeout(() => {
+          try {
+            const camera = vp.getCamera();
+            if (camera && camera.parallelScale) {
+              fitParallelScaleRef.current[viewportId] = camera.parallelScale;
+            }
+          } catch (err) {
+            console.warn('Error storing fit scale:', err);
+          }
+        }, 100);
+        
         // Reset transformations for this viewport
         updateTransformations(viewportId, {
           rotation: 0,
@@ -741,14 +877,15 @@ export default function DICOMViewer() {
         
         if (toolGroup) {
           try {
-            // Enable tools for independent interaction in each viewport
-            // On mobile, we handle touch events manually, so we keep mouse bindings for desktop
-            toolGroup.setToolActive(WindowLevelTool.toolName, {
-              bindings: [{ mouseButton: toolEnums.MouseBindings.Primary }],
-            });
+            // Disable Window/Level tool - Contrast is controlled via slider only
+            toolGroup.setToolPassive(WindowLevelTool.toolName);
+            
+            // Enable Pan tool for moving around when zoomed
             toolGroup.setToolActive(PanTool.toolName, {
               bindings: [{ mouseButton: toolEnums.MouseBindings.Auxiliary }],
             });
+            
+            // Enable zoom and scroll
             toolGroup.setToolActive(ZoomTool.toolName, {
               bindings: [
                 { mouseButton: toolEnums.MouseBindings.Secondary },
@@ -863,11 +1000,12 @@ export default function DICOMViewer() {
 
 
   /**
-   * Rotate controls
+   * Rotate controls - Fixed: ccw rotates counter-clockwise, cw rotates clockwise
    */
   const handleRotate = useCallback((direction: 'cw' | 'ccw', viewportId?: string) => {
     const vpId = viewportId || activeViewportId;
-    const angle = direction === 'cw' ? 90 : -90;
+    // Fixed: ccw = counter-clockwise (-90), cw = clockwise (+90)
+    const angle = direction === 'ccw' ? -90 : 90;
     const current = getTransformations(vpId);
     // Calculate new rotation, ensuring it's in the range [0, 360)
     let newRotation = current.rotation + angle;
@@ -876,61 +1014,65 @@ export default function DICOMViewer() {
     updateTransformations(vpId, {
       rotation: newRotation,
     });
-    requestAnimationFrame(() => {
+    // Apply immediately without delay
       applyTransformations(vpId);
-    });
   }, [activeViewportId, getTransformations, updateTransformations, applyTransformations]);
 
   /**
-   * Flip controls
+   * Flip controls - Fixed: horizontal flips horizontally, vertical flips vertically
    */
   const handleFlip = useCallback((direction: 'horizontal' | 'vertical', viewportId?: string) => {
     const vpId = viewportId || activeViewportId;
     const current = getTransformations(vpId);
+    // Fixed: horizontal flips horizontally (scaleX), vertical flips vertically (scaleY)
     if (direction === 'horizontal') {
       updateTransformations(vpId, { flipHorizontal: !current.flipHorizontal });
     } else {
       updateTransformations(vpId, { flipVertical: !current.flipVertical });
     }
-    // Use requestAnimationFrame to ensure DOM is ready
-    requestAnimationFrame(() => {
+    // Apply immediately without delay
       applyTransformations(vpId);
-    });
   }, [activeViewportId, getTransformations, updateTransformations, applyTransformations]);
 
   /**
-   * Invert control
+   * Invert control - Apply immediately
    */
   const handleInvert = useCallback((viewportId?: string) => {
     const vpId = viewportId || activeViewportId;
     const current = getTransformations(vpId);
     updateTransformations(vpId, { inverted: !current.inverted });
-    // Use requestAnimationFrame to ensure DOM is ready
-    requestAnimationFrame(() => {
+    // Apply immediately
       applyTransformations(vpId);
-    });
   }, [activeViewportId, getTransformations, updateTransformations, applyTransformations]);
 
   /**
-   * Contrast control
+   * Contrast control - Apply immediately
    */
   const handleContrastChange = useCallback((value: number, viewportId?: string) => {
     const vpId = viewportId || activeViewportId;
     updateTransformations(vpId, { contrast: value });
-    // Use requestAnimationFrame for immediate visual feedback
-    requestAnimationFrame(() => {
+    // Apply immediately for responsive feedback
       applyTransformations(vpId);
-    });
   }, [activeViewportId, updateTransformations, applyTransformations]);
 
   /**
-   * Reset view
+   * Reset view - Reloads the current image from the series
    */
-  const handleReset = useCallback((viewportId?: string) => {
+  const handleReset = useCallback(async (viewportId?: string) => {
     const vpId = viewportId || activeViewportId;
     const viewport = getViewport(vpId);
     if (viewport && viewport.getImageIds().length > 0) {
+      // Get current series and reload it
+      const currentSeries = loadedSeriesRef.current;
+      if (currentSeries) {
+        // Reload the series to reset everything
+        await loadSeries(currentSeries, [vpId]);
+      } else {
+        // Fallback: reset camera and transformations
       viewport.resetCamera();
+        // Update fit scale after reset
+        const resetCamera = viewport.getCamera();
+        fitParallelScaleRef.current[vpId] = resetCamera.parallelScale;
       updateTransformations(vpId, {
         rotation: 0,
         flipHorizontal: false,
@@ -938,68 +1080,90 @@ export default function DICOMViewer() {
         inverted: false,
         contrast: 1.0,
       });
-      setTimeout(() => applyTransformations(vpId), 0);
+        applyTransformations(vpId);
     }
-  }, [activeViewportId, getViewport, updateTransformations, applyTransformations]);
+    }
+  }, [activeViewportId, getViewport, updateTransformations, applyTransformations, loadSeries]);
 
   /**
-   * Cine playback
+   * Cine playback - Per viewport
    */
-  const handleCineToggle = useCallback(() => {
+  const handleCineToggle = useCallback((viewportId?: string) => {
+    const vpId = viewportId || activeViewportId;
+    const isPlaying = isCinePlaying[vpId] || false;
+    
     // Stop cine if playing
-    if (isCinePlaying) {
-      if (cineIntervalRef.current !== null) {
-        window.clearInterval(cineIntervalRef.current);
-        cineIntervalRef.current = null;
+    if (isPlaying) {
+      if (cineIntervalRef.current[vpId] !== null && cineIntervalRef.current[vpId] !== undefined) {
+        window.clearInterval(cineIntervalRef.current[vpId]!);
+        cineIntervalRef.current[vpId] = null;
       }
-      setIsCinePlaying(false);
+      setIsCinePlaying(prev => ({
+        ...prev,
+        [vpId]: false,
+      }));
       return;
     }
     
     // Start cine
-    const viewport = getViewport();
+    const viewport = getViewport(vpId);
     if (!viewport) return;
     
     const imageIds = viewport.getImageIds();
     if (!imageIds || imageIds.length <= 1) return;
     
-    setIsCinePlaying(true);
+    setIsCinePlaying(prev => ({
+      ...prev,
+      [vpId]: true,
+    }));
+    
     const interval = window.setInterval(() => {
-      const currentViewport = getViewport();
+      const currentViewport = getViewport(vpId);
       if (!currentViewport) {
-        if (cineIntervalRef.current !== null) {
-          window.clearInterval(cineIntervalRef.current);
-          cineIntervalRef.current = null;
+        if (cineIntervalRef.current[vpId] !== null && cineIntervalRef.current[vpId] !== undefined) {
+          window.clearInterval(cineIntervalRef.current[vpId]!);
+          cineIntervalRef.current[vpId] = null;
         }
-        setIsCinePlaying(false);
+        setIsCinePlaying(prev => ({
+          ...prev,
+          [vpId]: false,
+        }));
         return;
       }
       
       const currentIndex = currentViewport.getCurrentImageIdIndex();
       const currentImageIds = currentViewport.getImageIds();
       if (!currentImageIds || currentImageIds.length === 0) {
-        if (cineIntervalRef.current !== null) {
-          window.clearInterval(cineIntervalRef.current);
-          cineIntervalRef.current = null;
+        if (cineIntervalRef.current[vpId] !== null && cineIntervalRef.current[vpId] !== undefined) {
+          window.clearInterval(cineIntervalRef.current[vpId]!);
+          cineIntervalRef.current[vpId] = null;
         }
-        setIsCinePlaying(false);
+        setIsCinePlaying(prev => ({
+          ...prev,
+          [vpId]: false,
+        }));
         return;
       }
       
       const nextIndex = (currentIndex + 1) % currentImageIds.length;
       currentViewport.setImageIdIndex(nextIndex).then(() => {
-        setCurrentImageIndex(nextIndex);
-        applyTransformations(activeViewportId);
-      }).catch(() => {
-        if (cineIntervalRef.current !== null) {
-          window.clearInterval(cineIntervalRef.current);
-          cineIntervalRef.current = null;
+        if (vpId === activeViewportId) {
+          setCurrentImageIndex(nextIndex);
         }
-        setIsCinePlaying(false);
+        applyTransformations(vpId);
+      }).catch(() => {
+        if (cineIntervalRef.current[vpId] !== null && cineIntervalRef.current[vpId] !== undefined) {
+          window.clearInterval(cineIntervalRef.current[vpId]!);
+          cineIntervalRef.current[vpId] = null;
+        }
+        setIsCinePlaying(prev => ({
+          ...prev,
+          [vpId]: false,
+        }));
       });
     }, 1000 / cineSpeed);
     
-    cineIntervalRef.current = interval;
+    cineIntervalRef.current[vpId] = interval;
   }, [isCinePlaying, getViewport, activeViewportId, applyTransformations, cineSpeed]);
 
   // Update transformations when state changes
@@ -1010,9 +1174,12 @@ export default function DICOMViewer() {
   // Cleanup cine on unmount
   useEffect(() => {
     return () => {
-      if (cineIntervalRef.current) {
-        window.clearInterval(cineIntervalRef.current);
-      }
+      Object.values(cineIntervalRef.current).forEach(interval => {
+        if (interval !== null && interval !== undefined) {
+          window.clearInterval(interval);
+        }
+      });
+      cineIntervalRef.current = {};
     };
   }, []);
 
@@ -1027,7 +1194,7 @@ export default function DICOMViewer() {
         init();
         initTools();
 
-        addTool(WindowLevelTool);
+        // Add pan, zoom and scroll tools - window/level is disabled (contrast via slider)
         addTool(PanTool);
         addTool(ZoomTool);
         addTool(StackScrollTool);
@@ -1067,10 +1234,9 @@ export default function DICOMViewer() {
             
             const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
             if (toolGroup) {
-              toolGroup.addTool(WindowLevelTool.toolName);
-              toolGroup.addTool(PanTool.toolName);
               toolGroup.addTool(ZoomTool.toolName);
               toolGroup.addTool(StackScrollTool.toolName);
+              // Don't add WindowLevelTool or PanTool - they're disabled
               toolGroup.addViewport(viewportId, renderingEngineId);
               toolGroupsRef.current[viewportId] = toolGroup;
               
@@ -1079,7 +1245,7 @@ export default function DICOMViewer() {
                 viewportElement.style.pointerEvents = 'auto';
                 viewportElement.style.touchAction = 'none';
                 
-                // Setup pinch-to-zoom for mobile
+                // Setup pinch-to-zoom for mobile (without panning)
                 setupPinchToZoom(viewportId, viewportElement);
               }
             }
@@ -1121,9 +1287,13 @@ export default function DICOMViewer() {
 
     return () => {
       isMounted = false;
-      if (cineIntervalRef.current) {
-        window.clearInterval(cineIntervalRef.current);
-      }
+      // Cleanup all cine intervals
+      Object.values(cineIntervalRef.current).forEach(interval => {
+        if (interval !== null && interval !== undefined) {
+          window.clearInterval(interval);
+        }
+      });
+      cineIntervalRef.current = {};
       if (renderingEngineRef.current) {
         renderingEngineRef.current.destroy();
       }
@@ -1167,19 +1337,6 @@ export default function DICOMViewer() {
     return () => clearTimeout(timeout);
   }, [paneLayout, initializeViewport]);
   
-  // Resize viewports when full screen mode changes
-  useEffect(() => {
-    if (renderingEngineRef.current) {
-      const timeout = setTimeout(() => {
-        try {
-          renderingEngineRef.current?.resize();
-        } catch (err) {
-          console.warn('Error resizing on fullscreen change:', err);
-        }
-      }, 200);
-      return () => clearTimeout(timeout);
-    }
-  }, [fullScreenMode]);
 
   // Update pane layout
   useEffect(() => {
@@ -1193,13 +1350,13 @@ export default function DICOMViewer() {
   const getGridClass = useMemo(() => {
     if (isMobile) {
       // Mobile: Always vertical stack for better visibility
-      switch (paneLayout) {
-        case 1: return 'grid-cols-1 grid-rows-1';
+    switch (paneLayout) {
+      case 1: return 'grid-cols-1 grid-rows-1';
         case 2: return 'grid-cols-1 grid-rows-2';
         case 3: return 'grid-cols-1 grid-rows-3';
         case 4: return 'grid-cols-1 grid-rows-4';
-        default: return 'grid-cols-1 grid-rows-1';
-      }
+      default: return 'grid-cols-1 grid-rows-1';
+    }
     } else {
       // Desktop: Use grid layout
       switch (paneLayout) {
@@ -1228,182 +1385,197 @@ export default function DICOMViewer() {
   const isMultiStack = activeViewportImageCount > 1;
   const activeTransforms = getTransformations(activeViewportId);
 
-  // Toggle full screen mode
-  const toggleFullScreen = useCallback(() => {
-    setFullScreenMode(prev => !prev);
-    if (fullScreenMode) {
-      setBottomPanelOpen(true);
-    }
-    // Resize viewports after mode change
-    setTimeout(() => {
-      if (renderingEngineRef.current) {
-        try {
-          renderingEngineRef.current.resize();
-        } catch (err) {
-          console.warn('Error resizing viewports:', err);
-        }
-      }
-    }, 100);
-  }, [fullScreenMode]);
 
   return (
     <div 
-      className={`w-full h-screen flex bg-gray-900 text-white overflow-hidden ${fullScreenMode ? 'fixed inset-0 z-[9999]' : ''}`}
+      className="w-full h-screen flex bg-gray-900 text-white overflow-hidden"
       style={{
-        height: fullScreenMode ? '100vh' : '100vh',
-        height: fullScreenMode ? '100dvh' : '100dvh', // Dynamic viewport height for mobile
-        paddingTop: isMobile && !fullScreenMode ? 'env(safe-area-inset-top)' : '0',
-        paddingBottom: isMobile && !fullScreenMode ? 'env(safe-area-inset-bottom)' : '0',
+        height: '100dvh', // Dynamic viewport height for mobile
+        paddingTop: isMobile ? 'env(safe-area-inset-top)' : '0',
+        paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0',
       }}
     >
-      {/* Mobile Menu Button */}
-      {isMobile && !fullScreenMode && (
+      {/* Mobile Menu Button - Pictures icon, bottom rounded blue, above settings button, stacked above play button - Hidden when sidebar or bottom panel is open */}
+      {isMobile && !sidebarOpen && !bottomPanelOpen && (
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="fixed top-2 left-2 z-50 p-3 bg-gray-800/90 backdrop-blur-sm rounded-lg md:hidden shadow-lg touch-manipulation"
+          className="fixed z-50 p-4 bg-blue-600 text-white rounded-full shadow-lg active:bg-blue-700 min-h-[56px] min-w-[56px] flex items-center justify-center touch-manipulation md:hidden"
           style={{ 
-            top: `calc(env(safe-area-inset-top) + 0.5rem)`,
-            touchAction: 'manipulation'
+            touchAction: 'manipulation',
+            bottom: `calc(env(safe-area-inset-bottom) + 8.5rem)`, // Above settings button with proper spacing
+            right: `calc(env(safe-area-inset-right) + 1rem)`, // Proper margin from edge
           }}
           aria-label="Toggle menu"
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
         </button>
       )}
-      
-            {/* Full Screen Toggle Button - Mobile */}
+
+      {/* Mobile Sidebar - Completely separate, overlays viewport */}
       {isMobile && (
-        <button
-          onClick={toggleFullScreen}
-          className={`fixed ${fullScreenMode ? 'top-2 right-2' : 'top-2 right-2'} z-50 p-3 bg-gray-800/90 backdrop-blur-sm rounded-lg md:hidden shadow-lg touch-manipulation min-h-[44px] min-w-[44px] flex items-center justify-center`}
-          style={{ 
-            top: fullScreenMode ? '0.5rem' : `calc(env(safe-area-inset-top) + 0.5rem)`,
-            right: fullScreenMode ? '0.5rem' : `calc(env(safe-area-inset-right) + 0.5rem)`,
-            touchAction: 'manipulation'
-          }}
-          aria-label={fullScreenMode ? "Exit full screen" : "Enter full screen"}
-        >
-          {fullScreenMode ? (
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          ) : (
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-            </svg>
-          )}
-        </button>
-      )}
-      
-      {/* Full Screen Info - Mobile */}
-      {isMobile && fullScreenMode && (
-        <div className="fixed top-2 left-2 z-50 px-3 py-2 bg-gray-800/90 backdrop-blur-sm rounded-lg text-xs text-gray-300 touch-manipulation"
-          style={{ 
-            top: '0.5rem',
-            left: '0.5rem',
-            touchAction: 'manipulation'
-          }}
-        >
-          Double-tap to zoom | Pinch to zoom | Drag to pan
-        </div>
-      )}
-
-      {/* Left Sidebar - Series List */}
-      {(!fullScreenMode || !isMobile) && (
-      <div className={`${isMobile ? 'fixed' : 'relative'} ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} z-40 w-64 bg-gray-800 border-r border-gray-700 flex flex-col transition-transform duration-300 ease-in-out md:translate-x-0 h-full`}
-        style={{
-          height: isMobile ? '100dvh' : '100%',
-          paddingTop: isMobile ? 'env(safe-area-inset-top)' : '0',
-          paddingBottom: isMobile ? 'env(safe-area-inset-bottom)' : '0',
-        }}
-      >
-        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-bold">DICOM Series</h2>
-            <p className="text-xs text-gray-400 mt-1">
-              {seriesList.length} series found
-            </p>
-          </div>
-          {isMobile && (
-            <button
+        <>
+          {/* Backdrop overlay */}
+          {sidebarOpen && (
+            <div 
+              className="fixed inset-0 bg-black/50 z-[60]"
               onClick={() => setSidebarOpen(false)}
-              className="p-1 text-gray-400 hover:text-white"
-              aria-label="Close menu"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+              style={{
+                top: 'env(safe-area-inset-top)',
+                bottom: 'env(safe-area-inset-bottom)',
+              }}
+            />
           )}
-        </div>
-        
-        <div className="flex-1 overflow-y-auto">
-          {seriesList.length === 0 ? (
-            <div className="p-4 text-sm text-gray-400">
-              {status || 'No series available'}
+          
+          {/* Sidebar */}
+          <div 
+            className={`fixed ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} z-[70] w-64 bg-gray-800 border-r border-gray-700 flex flex-col transition-transform duration-300 ease-in-out h-full shadow-2xl`}
+            style={{
+              height: '100dvh',
+              paddingTop: 'env(safe-area-inset-top)',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+              top: 0,
+              left: 0,
+            }}
+          >
+            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold">DICOM Series</h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  {seriesList.length} series found
+                </p>
+              </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="p-1 text-gray-400 hover:text-white"
+                aria-label="Close menu"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
-          ) : (
-            <div className="p-2">
-              {seriesList.map((series) => {
-                const seriesOrientation = getSeriesOrientation(series.seriesId);
-                return (
-                  <button
-                    key={series.seriesId}
-                    onClick={() => {
-                      handleSeriesSelect(series.seriesId);
-                      if (isMobile) setSidebarOpen(false);
-                    }}
-                    className={`w-full text-left p-3 mb-2 rounded transition-colors ${
-                      selectedSeriesId === series.seriesId
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    }`}
-                  >
-                    <div className="font-semibold text-sm truncate">
-                      {series.seriesName || series.seriesId}
-                      {seriesOrientation && (
-                        <span className="ml-2 text-xs opacity-75">({seriesOrientation})</span>
-                      )}
-                    </div>
-                    <div className="text-xs mt-1 opacity-75">
-                      {series.instanceCount} image{series.instanceCount !== 1 ? 's' : ''}
-                    </div>
-                  </button>
-                );
-              })}
+            
+            <div className="flex-1 overflow-y-auto">
+              {seriesList.length === 0 ? (
+                <div className="p-4 text-sm text-gray-400">
+                  {status || 'No series available'}
+                </div>
+              ) : (
+                <div className="p-2">
+                  {seriesList.map((series) => {
+                    const seriesOrientation = getSeriesOrientation(series.seriesId);
+                    return (
+                      <button
+                        key={series.seriesId}
+                        onClick={() => {
+                          handleSeriesSelect(series.seriesId);
+                          setSidebarOpen(false);
+                        }}
+                        className={`w-full text-left p-3 mb-2 rounded transition-colors ${
+                          selectedSeriesId === series.seriesId
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
+                        <div className="font-semibold text-sm truncate">
+                          {series.seriesName || series.seriesId}
+                          {seriesOrientation && (
+                            <span className="ml-2 text-xs opacity-75">({seriesOrientation})</span>
+                          )}
+                        </div>
+                        <div className="text-xs mt-1 opacity-75">
+                          {series.instanceCount} image{series.instanceCount !== 1 ? 's' : ''}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
       )}
 
-      {/* Main Content Area */}
+      {/* Desktop Sidebar - Part of flex layout */}
+      {!isMobile && (
+        <div className="relative z-40 w-64 bg-gray-800 border-r border-gray-700 flex flex-col h-full">
+          <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold">DICOM Series</h2>
+              <p className="text-xs text-gray-400 mt-1">
+                {seriesList.length} series found
+              </p>
+            </div>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto">
+            {seriesList.length === 0 ? (
+              <div className="p-4 text-sm text-gray-400">
+                {status || 'No series available'}
+              </div>
+            ) : (
+              <div className="p-2">
+                {seriesList.map((series) => {
+                  const seriesOrientation = getSeriesOrientation(series.seriesId);
+                  return (
+                    <button
+                      key={series.seriesId}
+                      onClick={() => {
+                        handleSeriesSelect(series.seriesId);
+                      }}
+                      className={`w-full text-left p-3 mb-2 rounded transition-colors ${
+                        selectedSeriesId === series.seriesId
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      <div className="font-semibold text-sm truncate">
+                        {series.seriesName || series.seriesId}
+                        {seriesOrientation && (
+                          <span className="ml-2 text-xs opacity-75">({seriesOrientation})</span>
+                        )}
+                      </div>
+                      <div className="text-xs mt-1 opacity-75">
+                        {series.instanceCount} image{series.instanceCount !== 1 ? 's' : ''}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area - Full width on mobile, flex-1 on desktop */}
       <div 
-        className="flex-1 flex flex-col overflow-hidden"
+        className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col overflow-hidden`}
         style={{
-          width: fullScreenMode && isMobile ? '100vw' : '100%',
-          height: fullScreenMode && isMobile ? '100dvh' : '100%',
+          width: isMobile ? '100%' : '100%',
+          height: '100%',
         }}
       >
         {/* Top Toolbar - Desktop */}
-        {!fullScreenMode && (
+        {(
         <div className="hidden md:block bg-gray-800 border-b border-gray-700 p-2 md:p-3">
+          <div className="flex flex-col gap-2">
+            {/* First Row - Main Controls */}
           <div className="flex flex-wrap gap-1 md:gap-2 items-center text-xs md:text-sm">
-            {/* Rotate Controls */}
+            {/* Rotate Controls - Icons swapped correctly */}
             <div className="flex gap-1 border-r border-gray-600 pr-1 md:pr-2">
               <button
                 onClick={() => handleRotate('ccw')}
                 className="px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600"
-                title="Rotate -90°"
+                title="Rotate Counter-Clockwise"
               >
                 ↺
               </button>
               <button
                 onClick={() => handleRotate('cw')}
                 className="px-2 py-1 rounded bg-gray-700 text-gray-300 hover:bg-gray-600"
-                title="Rotate +90°"
+                title="Rotate Clockwise"
               >
                 ↻
               </button>
@@ -1431,33 +1603,26 @@ export default function DICOMViewer() {
               </button>
             </div>
 
-            {/* Contrast Control */}
-            <div className="flex items-center gap-1 md:gap-2 border-r border-gray-600 pr-1 md:pr-2">
-              <span className="text-gray-400 hidden md:inline">C:</span>
-              <input
-                type="range"
-                min="0.1"
-                max="3.0"
-                step="0.1"
+            {/* Contrast Control - Material UI Slider */}
+            <div className="flex items-center gap-2 border-r border-gray-600 pr-1 md:pr-2">
+              <span className="text-gray-400 hidden md:inline text-xs">Contrast:</span>
+              <div className="flex items-center gap-2">
+                <div className="w-20 md:w-32">
+                  <WhiteSlider
                 value={activeTransforms.contrast || 1.0}
-                onChange={(e) => {
-                  const value = parseFloat(e.target.value);
-                  if (!isNaN(value)) {
-                    handleContrastChange(value);
-                  }
-                }}
-                onInput={(e) => {
-                  const value = parseFloat((e.target as HTMLInputElement).value);
-                  if (!isNaN(value)) {
-                    handleContrastChange(value);
-                  }
-                }}
-                className="w-16 md:w-20"
-                style={{
-                  '--fill-percentage': `${(((activeTransforms.contrast || 1.0) - 0.1) / (3.0 - 0.1)) * 100}%`,
-                } as React.CSSProperties}
-              />
-              <span className="text-gray-400 w-6 md:w-8 text-xs">{(activeTransforms.contrast || 1.0).toFixed(1)}</span>
+                    min={0.1}
+                    max={3.0}
+                    step={0.1}
+                    onChange={(e, value) => {
+                      handleContrastChange(value as number);
+                    }}
+                    size="small"
+                  />
+                </div>
+                <span className="text-gray-300 w-10 text-xs font-semibold bg-gray-700 px-2 py-1 rounded">
+                  {(activeTransforms.contrast || 1.0).toFixed(1)}
+                </span>
+              </div>
             </div>
 
             {/* Invert Control */}
@@ -1499,39 +1664,20 @@ export default function DICOMViewer() {
                   </select>
                 </div>
 
-                {/* Cine Control */}
-                <div className="border-r border-gray-600 pr-1 md:pr-2">
-                  <button
-                    onClick={handleCineToggle}
-                    className={`px-2 md:px-3 py-1 rounded text-xs md:text-sm ${
-                      isCinePlaying ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    }`}
-                    title="Cine Playback"
-                  >
-                    {isCinePlaying ? '⏸' : '▶'}
-                  </button>
-                </div>
+                 {/* Cine Control */}
+                 <div className="border-r border-gray-600 pr-1 md:pr-2">
+                   <button
+                     onClick={() => handleCineToggle(activeViewportId)}
+                     className={`px-2 md:px-3 py-1 rounded text-xs md:text-sm ${
+                       isCinePlaying[activeViewportId] ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                     }`}
+                     title="Cine Playback"
+                   >
+                     {isCinePlaying[activeViewportId] ? '⏸' : '▶'}
+                   </button>
+                 </div>
               </>
             )}
-
-            {/* Multipane View */}
-            <div className="flex gap-1 border-r border-gray-600 pr-1 md:pr-2">
-              <span className="text-gray-400 px-1 hidden md:inline">P:</span>
-              {[1, 2, 3, 4].map((num) => (
-                <button
-                  key={num}
-                  onClick={() => setPaneLayout(num as PaneLayout)}
-                  className={`px-1 md:px-2 py-1 rounded text-xs md:text-sm ${
-                    paneLayout === num
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                  title={`${num} Pane${num > 1 ? 's' : ''}`}
-                >
-                  {num}
-                </button>
-              ))}
-            </div>
 
             {/* Reset */}
             <div>
@@ -1542,6 +1688,27 @@ export default function DICOMViewer() {
               >
                 Reset
               </button>
+            </div>
+            </div>
+
+            {/* Second Row - Multipane View on New Line */}
+            <div className="flex items-center gap-2 pt-2 border-t border-gray-600">
+              <div className="flex gap-1">
+              {[1, 2, 3, 4].map((num) => (
+                <button
+                  key={num}
+                  onClick={() => setPaneLayout(num as PaneLayout)}
+                    className={`px-2 md:px-3 py-1 rounded text-xs md:text-sm ${
+                    paneLayout === num
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                  title={`${num} Pane${num > 1 ? 's' : ''}`}
+                >
+                  {num}
+                </button>
+              ))}
+            </div>
             </div>
 
             {/* Navigation */}
@@ -1592,13 +1759,11 @@ export default function DICOMViewer() {
 
         {/* Viewport Grid */}
         <div 
-          className={`flex-1 bg-black grid ${getGridClass} overflow-hidden ${fullScreenMode ? 'p-0' : 'p-2 md:p-4'} ${fullScreenMode ? 'gap-0' : 'gap-2 md:gap-4'}`}
+          className={`flex-1 bg-black grid ${getGridClass} overflow-hidden p-2 md:p-4 gap-2 md:gap-4`}
           style={{
-            height: fullScreenMode && isMobile 
-              ? '100dvh' 
-              : isMobile && bottomPanelOpen 
-                ? `calc(100vh - ${fullScreenMode ? 0 : 320}px - env(safe-area-inset-bottom))`
-                : '100%',
+            height: isMobile && bottomPanelOpen 
+              ? `calc(100vh - 320px - env(safe-area-inset-bottom))`
+              : '100%',
             minHeight: isMobile ? '0' : '300px',
           }}
         >
@@ -1657,52 +1822,108 @@ export default function DICOMViewer() {
                 />
                 {paneLayout > 1 && (
                   <>
-                    <div className="absolute top-2 left-2 bg-black/70 px-2 py-1 rounded text-xs">
-                      {num}
+                    <div className="absolute top-1 left-1 bg-black/80 backdrop-blur-sm px-2 py-1 rounded text-xs font-bold text-white z-10 pointer-events-none"
+                      style={{ 
+                        top: '0.25rem',
+                        left: '0.25rem',
+                        maxWidth: 'calc(100% - 0.5rem)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      Pane {num}
                     </div>
                     {isActive && (
-                      <div className="absolute top-2 right-2 bg-blue-600/80 px-2 py-1 rounded text-xs">
+                      <div className="absolute top-1 left-1 bg-blue-600/90 backdrop-blur-sm px-2 py-1 rounded text-xs font-semibold text-white z-10 pointer-events-none"
+                        style={{ 
+                          top: '2rem',
+                          left: '0.25rem',
+                          maxWidth: 'calc(100% - 0.5rem)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
                         Active
                       </div>
                     )}
                   </>
                 )}
+                
+                {/* Individual Cine Control per Pane */}
+                {(() => {
+                  const viewport = getViewport(viewportId);
+                  const hasMultipleImages = viewport && viewport.getImageIds() && viewport.getImageIds().length > 1;
+                  const paneIsPlaying = isCinePlaying[viewportId] || false;
+                  
+                  if (hasMultipleImages) {
+                    return (
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleCineToggle(viewportId);
+                        }}
+                        className={`absolute bottom-2 right-2 z-20 p-2 rounded-lg shadow-lg backdrop-blur-sm touch-manipulation min-h-[36px] min-w-[36px] flex items-center justify-center ${
+                          paneIsPlaying 
+                            ? 'bg-red-600/90 text-white hover:bg-red-700/90' 
+                            : 'bg-gray-700/90 text-gray-300 hover:bg-gray-600/90'
+                        }`}
+                        style={{ touchAction: 'manipulation' }}
+                        title={paneIsPlaying ? 'Pause Cine' : 'Play Cine'}
+                      >
+                        {paneIsPlaying ? (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M8 5v14l11-7z"/>
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             );
           })}
         </div>
 
         {/* Instructions - Desktop */}
-        {!fullScreenMode && (
+        {(
         <div className="bg-gray-800 border-t border-gray-700 p-1 md:p-2 text-xs text-gray-400 text-center hidden md:block">
           Left Click: W/L | Middle: Pan | Right: Zoom | Wheel: Scroll | ↑↓: Navigate
         </div>
         )}
 
-        {/* Toggle Button - Mobile - Shows when panel is hidden */}
-        {!bottomPanelOpen && isMobile && !fullScreenMode && (
+        {/* Toggle Button - Mobile - Shows when panel is hidden - Tool icon above play button in right corner */}
+        {!bottomPanelOpen && isMobile && (
           <button
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
               setBottomPanelOpen(true);
             }}
-            className="fixed bottom-4 right-4 z-50 p-4 bg-blue-600 text-white rounded-full shadow-lg active:bg-blue-700 min-h-[56px] min-w-[56px] flex items-center justify-center touch-manipulation"
+            className="fixed z-50 p-4 bg-blue-600 text-white rounded-full shadow-lg active:bg-blue-700 min-h-[56px] min-w-[56px] flex items-center justify-center touch-manipulation"
             style={{ 
               touchAction: 'manipulation',
-              bottom: `calc(env(safe-area-inset-bottom) + 1rem)`,
-              right: `calc(env(safe-area-inset-right) + 1rem)`,
+              bottom: `calc(env(safe-area-inset-bottom) + 4.5rem)`, // Above play button with proper spacing
+              right: `calc(env(safe-area-inset-right) + 1rem)`, // Proper margin from edge
             }}
             aria-label="Show controls"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
           </button>
         )}
 
         {/* Bottom Toolbar - Mobile - Touch-Optimized */}
-        {bottomPanelOpen && !fullScreenMode && (
+        {bottomPanelOpen && (
           <div 
             className="md:hidden bg-gray-800/95 backdrop-blur-sm border-t border-gray-700 p-4 shadow-2xl overflow-y-auto max-h-[50vh]"
             style={{ 
@@ -1728,48 +1949,30 @@ export default function DICOMViewer() {
               </button>
             </div>
           <div className="flex flex-col gap-4">
-            {/* Contrast Control - Large Touch Target - Enhanced */}
-            <div className="flex items-center gap-3 w-full bg-gray-900/50 rounded-lg p-3">
-              <label className="text-base font-semibold text-white min-w-[80px]">
+            {/* Contrast Control - Material UI Slider - Large Touch Target */}
+            <div className="flex items-center gap-3 w-full bg-gray-900/50 rounded-lg p-4">
+              <label className="text-base font-semibold text-white min-w-[90px]">
                 Contrast
               </label>
               <div className="flex-1 relative">
-                <input
-                  type="range"
-                  min="0.1"
-                  max="3.0"
-                  step="0.1"
+                <WhiteSliderMobile
                   value={activeTransforms.contrast || 1.0}
-                  onChange={(e) => {
-                    const value = parseFloat(e.target.value);
-                    if (!isNaN(value)) {
-                      handleContrastChange(value);
-                    }
+                  min={0.1}
+                  max={3.0}
+                  step={0.1}
+                  onChange={(e, value) => {
+                    handleContrastChange(value as number);
                   }}
-                  onInput={(e) => {
-                    const value = parseFloat((e.target as HTMLInputElement).value);
-                    if (!isNaN(value)) {
-                      handleContrastChange(value);
-                    }
-                  }}
-                  className="w-full h-10 touch-none"
-                  style={{
-                    WebkitAppearance: 'none',
-                    appearance: 'none',
-                    background: 'transparent',
-                    cursor: 'pointer',
-                    '--fill-percentage': `${(((activeTransforms.contrast || 1.0) - 0.1) / (3.0 - 0.1)) * 100}%`,
-                  } as React.CSSProperties}
                 />
               </div>
-              <span className="text-lg font-bold text-white min-w-[50px] text-right bg-blue-600/20 px-3 py-1 rounded">
+              <span className="text-lg font-bold text-white min-w-[55px] text-right bg-blue-600/30 px-3 py-2 rounded-lg border border-blue-500/50">
                 {activeTransforms.contrast.toFixed(1)}
               </span>
             </div>
 
             {/* Control Buttons Grid - Large Touch Targets */}
             <div className="grid grid-cols-4 gap-2">
-              {/* Rotate Controls */}
+              {/* Rotate Controls - Icons swapped correctly */}
               <button
                 onClick={(e) => {
                   e.preventDefault();
@@ -1778,7 +1981,7 @@ export default function DICOMViewer() {
                 }}
                 className="px-4 py-3 rounded-lg bg-gray-700 text-gray-300 active:bg-gray-600 text-lg font-medium min-h-[48px] flex items-center justify-center touch-manipulation"
                 style={{ touchAction: 'manipulation' }}
-                title="Rotate -90°"
+                title="Rotate Counter-Clockwise"
               >
                 ↺
               </button>
@@ -1790,7 +1993,7 @@ export default function DICOMViewer() {
                 }}
                 className="px-4 py-3 rounded-lg bg-gray-700 text-gray-300 active:bg-gray-600 text-lg font-medium min-h-[48px] flex items-center justify-center touch-manipulation"
                 style={{ touchAction: 'manipulation' }}
-                title="Rotate +90°"
+                title="Rotate Clockwise"
               >
                 ↻
               </button>
@@ -1827,7 +2030,7 @@ export default function DICOMViewer() {
             </div>
 
             {/* Second Row of Controls */}
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               {/* Invert Control */}
               <button
                 onClick={(e) => {
@@ -1857,9 +2060,12 @@ export default function DICOMViewer() {
               >
                 Reset
               </button>
+            </div>
 
-              {/* Multipane View */}
-              <div className="col-span-2 flex gap-2">
+            {/* Multipane View - On New Line */}
+            <div className="w-full border-t border-gray-600 pt-3 mt-2">
+              <div className="flex items-center gap-3">
+                <div className="flex gap-2 flex-1">
                 {[1, 2, 3, 4].map((num) => (
                   <button
                     key={num}
@@ -1868,7 +2074,7 @@ export default function DICOMViewer() {
                       e.stopPropagation();
                       setPaneLayout(num as PaneLayout);
                     }}
-                    className={`flex-1 px-2 py-3 rounded-lg text-base font-medium min-h-[48px] flex items-center justify-center touch-manipulation ${
+                      className={`flex-1 px-3 py-3 rounded-lg text-base font-medium min-h-[48px] flex items-center justify-center touch-manipulation ${
                       paneLayout === num
                         ? 'bg-blue-600 text-white'
                         : 'bg-gray-700 text-gray-300 active:bg-gray-600'
@@ -1879,6 +2085,7 @@ export default function DICOMViewer() {
                     {num}
                   </button>
                 ))}
+                </div>
               </div>
             </div>
 
@@ -1906,21 +2113,21 @@ export default function DICOMViewer() {
                   <option value="Coronal">Coronal</option>
                 </select>
 
-                {/* Cine Control */}
-                <button
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleCineToggle();
-                  }}
-                  className={`px-4 py-3 rounded-lg text-base font-medium min-h-[48px] flex items-center justify-center touch-manipulation ${
-                    isCinePlaying ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 active:bg-gray-600'
-                  }`}
-                  style={{ touchAction: 'manipulation' }}
-                  title="Cine Playback"
-                >
-                  {isCinePlaying ? '⏸ Pause' : '▶ Play'}
-                </button>
+                 {/* Cine Control */}
+                 <button
+                   onClick={(e) => {
+                     e.preventDefault();
+                     e.stopPropagation();
+                     handleCineToggle(activeViewportId);
+                   }}
+                   className={`px-4 py-3 rounded-lg text-base font-medium min-h-[48px] flex items-center justify-center touch-manipulation ${
+                     isCinePlaying[activeViewportId] ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 active:bg-gray-600'
+                   }`}
+                   style={{ touchAction: 'manipulation' }}
+                   title="Cine Playback"
+                 >
+                   {isCinePlaying[activeViewportId] ? '⏸ Pause' : '▶ Play'}
+                 </button>
               </div>
             )}
 

@@ -26,7 +26,7 @@ export default function App() {
       // Use your actual local IP address for Android emulator
       // This is more reliable than 10.0.2.2 in some setups
       // Update this IP if your network changes
-      return 'http://10.201.8.113:5173';
+      return 'http://172.26.215.113:5173';
       
       // Alternative: Try 10.0.2.2 if the above doesn't work
       // return 'http://10.0.2.2:5173';
@@ -82,7 +82,7 @@ export default function App() {
             For Android emulator, if 10.0.2.2 doesn't work:{'\n'}
             - Find your local IP address{'\n'}
             - Update App.tsx line with your IP{'\n'}
-            - Example: http://10.201.8.113:5173
+            - Example: http://172.26.215.113:5173
           </Text>
         </View>
       )}
