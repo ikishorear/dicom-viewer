@@ -1,0 +1,27 @@
+{
+  "rewrites": [
+    {
+      "source": "/dicoms/:path*",
+      "destination": "/dicoms/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/dicoms/:path*",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Content-Type",
+          "value": "application/dicom"
+        }
+      ]
+    }
+  ]
+}
