@@ -30,7 +30,7 @@ type Orientation = 'Axial' | 'Coronal' | 'Sagittal' | 'Acquisition';
 type PaneLayout = 1 | 2 | 3 | 4;
 
 // Styled Material UI Slider with white track
-const WhiteSlider = styled(Slider)(({ theme }) => ({
+const WhiteSlider = styled(Slider)(() => ({
   color: '#ffffff',
   height: 8,
   '& .MuiSlider-track': {
@@ -57,7 +57,7 @@ const WhiteSlider = styled(Slider)(({ theme }) => ({
 }));
 
 // Mobile styled slider
-const WhiteSliderMobile = styled(Slider)(({ theme }) => ({
+const WhiteSliderMobile = styled(Slider)(() => ({
   color: '#ffffff',
   height: 12,
   '& .MuiSlider-track': {
@@ -98,7 +98,7 @@ export default function DICOMViewer() {
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeriesId, setSelectedSeriesId] = useState<string | null>(null);
   const [currentImageIndex, setCurrentImageIndex] = useState<number>(0);
-  const [totalImages, setTotalImages] = useState<number>(0);
+  const [, setTotalImages] = useState<number>(0);
   const [status, setStatus] = useState<string>('Initializing...');
   const [error, setError] = useState<string | null>(null);
   
@@ -203,7 +203,7 @@ export default function DICOMViewer() {
    */
   const setupPinchToZoom = useCallback((viewportId: string, viewportElement: HTMLElement) => {
     // Configuration
-    const MIN_SCALE = 1; // Fit to window (minimum zoom)
+    // Removed unused MIN_SCALE constant
     const MAX_SCALE = 5; // Maximum zoom (5x)
     
     // Helper functions
@@ -237,18 +237,6 @@ export default function DICOMViewer() {
      * Calculate current scale from parallelScale
      * Scale = fitParallelScale / currentParallelScale
      */
-    const getCurrentScale = (): number => {
-      const viewport = getViewport(viewportId);
-      if (!viewport) return MIN_SCALE;
-      try {
-        const camera = viewport.getCamera();
-        const currentParallelScale = camera.parallelScale || 1;
-        const fitScale = fitParallelScaleRef.current[viewportId] || currentParallelScale;
-        return Math.max(MIN_SCALE, fitScale / currentParallelScale);
-      } catch (err) {
-        return MIN_SCALE;
-      }
-    };
 
     // Gesture state
     let initialDistance = 0;
@@ -275,9 +263,9 @@ export default function DICOMViewer() {
           const camera = viewport.getCamera();
           initialParallelScale = camera.parallelScale || 1;
           initialCamera = {
-            parallelScale: camera.parallelScale,
-            focalPoint: [...camera.focalPoint] as [number, number, number],
-            position: [...camera.position] as [number, number, number],
+            parallelScale: camera.parallelScale ?? 1,
+            focalPoint: camera.focalPoint ? [...camera.focalPoint] as [number, number, number] : [0, 0, 0],
+            position: camera.position ? [...camera.position] as [number, number, number] : [0, 0, 0],
           };
           
           // Get the world point at the pinch center - this is what we want to keep fixed
@@ -310,7 +298,7 @@ export default function DICOMViewer() {
             if (currentZoom < fitScale) {
               viewport.resetCamera();
               const resetCamera = viewport.getCamera();
-              fitParallelScaleRef.current[viewportId] = resetCamera.parallelScale;
+              fitParallelScaleRef.current[viewportId] = resetCamera.parallelScale ?? 1;
               viewport.render();
             }
             tapCount = 0;
@@ -1072,7 +1060,7 @@ export default function DICOMViewer() {
       viewport.resetCamera();
         // Update fit scale after reset
         const resetCamera = viewport.getCamera();
-        fitParallelScaleRef.current[vpId] = resetCamera.parallelScale;
+        fitParallelScaleRef.current[vpId] = resetCamera.parallelScale ?? 1;
       updateTransformations(vpId, {
         rotation: 0,
         flipHorizontal: false,
@@ -1613,7 +1601,7 @@ export default function DICOMViewer() {
                     min={0.1}
                     max={3.0}
                     step={0.1}
-                    onChange={(e, value) => {
+                    onChange={(_e, value) => {
                       handleContrastChange(value as number);
                     }}
                     size="small"
@@ -1960,7 +1948,7 @@ export default function DICOMViewer() {
                   min={0.1}
                   max={3.0}
                   step={0.1}
-                  onChange={(e, value) => {
+                  onChange={(_e, value) => {
                     handleContrastChange(value as number);
                   }}
                 />

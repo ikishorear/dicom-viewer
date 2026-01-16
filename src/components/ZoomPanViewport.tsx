@@ -12,7 +12,7 @@
  */
 
 import React, { useRef, useEffect, useCallback } from 'react';
-import { useZoomPan, ZoomPanConfig } from '../hooks/useZoomPan';
+import { useZoomPan, type ZoomPanConfig } from '../hooks/useZoomPan';
 
 interface ZoomPanViewportProps {
   viewportId: string;
@@ -33,7 +33,7 @@ export const ZoomPanViewport: React.FC<ZoomPanViewportProps> = ({
   const imageRef = useRef<HTMLDivElement>(null);
   const syncTimeoutRef = useRef<number | null>(null);
 
-  const { state, handlers, setState, reset } = useZoomPan(containerRef, imageRef, {
+  const { state, handlers } = useZoomPan(containerRef as React.RefObject<HTMLElement>, imageRef as React.RefObject<HTMLElement>, {
     minScale: 1,
     maxScale: 5,
     initialScale: 1,

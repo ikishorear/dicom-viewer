@@ -50,8 +50,8 @@ const DEFAULT_CONFIG: Required<CornerstoneZoomPanConfig> = {
  */
 function calculatePanBounds(
   viewport: any,
-  minScale: number,
-  maxScale: number,
+  _minScale: number,
+  _maxScale: number,
   currentScale: number
 ): {
   minFocalX: number;
@@ -76,12 +76,11 @@ function calculatePanBounds(
     // In a real implementation, you'd get this from the image metadata
     // For now, we'll use the viewport's current bounds
     const camera = viewport.getCamera();
-    const currentParallelScale = camera.parallelScale;
 
     // Calculate how much the image extends beyond the viewport at current zoom
     // When scale = 1 (fit), bounds should be 0
     // When scale > 1, image is larger and can be panned
-    const scaleRatio = currentScale / minScale; // How much we're zoomed in
+    const scaleRatio = currentScale / _minScale; // How much we're zoomed in
 
     if (scaleRatio <= 1) {
       // At or below fit scale, no panning needed
@@ -164,8 +163,7 @@ export function useCornerstoneZoomPan(
     tapCount: 0,
   });
 
-  // Animation frame for smooth updates
-  const rafRef = useRef<number | null>(null);
+  // Animation frame for smooth updates (removed unused rafRef)
 
   /**
    * Get current scale from parallelScale
@@ -292,7 +290,7 @@ export function useCornerstoneZoomPan(
         const canvas = viewport.element.querySelector('canvas');
         if (!canvas) return;
 
-        const canvasRect = canvas.getBoundingClientRect();
+        // Removed unused canvasRect
 
         // Convert canvas coordinates to world coordinates
         const startWorld = viewport.canvasToWorld([0, 0]);

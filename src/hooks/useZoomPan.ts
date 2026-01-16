@@ -52,7 +52,7 @@ const DEFAULT_CONFIG: Required<ZoomPanConfig> = {
 /**
  * Calculate the distance between two touch points
  */
-function getDistance(touch1: Touch, touch2: Touch): number {
+function getDistance(touch1: React.Touch | Touch, touch2: React.Touch | Touch): number {
   const dx = touch1.clientX - touch2.clientX;
   const dy = touch1.clientY - touch2.clientY;
   return Math.sqrt(dx * dx + dy * dy);
@@ -61,7 +61,7 @@ function getDistance(touch1: Touch, touch2: Touch): number {
 /**
  * Calculate the center point between two touches
  */
-function getCenter(touch1: Touch, touch2: Touch): { x: number; y: number } {
+function getCenter(touch1: React.Touch | Touch, touch2: React.Touch | Touch): { x: number; y: number } {
   return {
     x: (touch1.clientX + touch2.clientX) / 2,
     y: (touch1.clientY + touch2.clientY) / 2,
@@ -300,11 +300,11 @@ export function useZoomPan(
    * This keeps the focal point fixed during zoom.
    */
   const handlePinchZoom = useCallback(
-    (touches: TouchList) => {
+    (touches: React.TouchList | TouchList) => {
       if (touches.length !== 2) return;
 
       const gesture = gestureStateRef.current;
-      const currentDistance = getDistance(touches[0], touches[1]);
+      const currentDistance = getDistance(touches[0] as React.Touch | Touch, touches[1] as React.Touch | Touch);
       const scaleFactor = gesture.initialDistance / currentDistance;
       const newScale = clamp(
         gesture.initialScale * scaleFactor,
@@ -317,7 +317,7 @@ export function useZoomPan(
       if (!container) return;
 
       const containerRect = container.getBoundingClientRect();
-      const currentCenter = getCenter(touches[0], touches[1]);
+      const currentCenter = getCenter(touches[0] as React.Touch | Touch, touches[1] as React.Touch | Touch);
       const pinchCenterX = currentCenter.x - containerRect.left;
       const pinchCenterY = currentCenter.y - containerRect.top;
 
@@ -349,7 +349,6 @@ export function useZoomPan(
       const container = containerRef.current;
       if (!container) return;
 
-      const containerRect = container.getBoundingClientRect();
       const deltaX = touch.clientX - gesture.lastPanPoint.x;
       const deltaY = touch.clientY - gesture.lastPanPoint.y;
 
@@ -424,12 +423,12 @@ export function useZoomPan(
         // Pinch gesture
         gesture.isPinching = true;
         gesture.isPanning = false;
-        gesture.initialDistance = getDistance(touches[0], touches[1]);
+        gesture.initialDistance = getDistance(touches[0] as React.Touch | Touch, touches[1] as React.Touch | Touch);
         gesture.initialScale = currentState.scale;
         gesture.initialTranslateX = currentState.translateX;
         gesture.initialTranslateY = currentState.translateY;
 
-        const center = getCenter(touches[0], touches[1]);
+        const center = getCenter(touches[0] as React.Touch | Touch, touches[1] as React.Touch | Touch);
         const container = containerRef.current;
         if (container) {
           const containerRect = container.getBoundingClientRect();
@@ -454,7 +453,7 @@ export function useZoomPan(
         const timeDiff = currentTime - gesture.lastTapTime;
 
         if (timeDiff < 300 && gesture.tapCount === 1) {
-          handleDoubleTap(touches[0]);
+          handleDoubleTap(touches[0] as Touch);
           gesture.tapCount = 0;
           gesture.isPanning = false;
           return;
@@ -480,7 +479,7 @@ export function useZoomPan(
       if (touches.length === 2 && gesture.isPinching) {
         handlePinchZoom(touches);
       } else if (touches.length === 1 && gesture.isPanning && gesture.lastPanPoint) {
-        handlePan(touches[0]);
+        handlePan(touches[0] as Touch);
         gesture.lastPanPoint = {
           x: touches[0].clientX,
           y: touches[0].clientY,

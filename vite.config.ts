@@ -15,7 +15,7 @@ function dicomServerPlugin(): Plugin {
       
       // Serve dicoms folder - handle manifest, directory listing, and individual files
       // This runs before Vite's history API fallback
-      server.middlewares.use('/dicoms', (req, res, next) => {
+      server.middlewares.use('/dicoms', (req, res, _next) => {
         try {
           console.log(`[DICOM Middleware] Request: ${req.url}`);
           
