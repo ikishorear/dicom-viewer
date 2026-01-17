@@ -9,32 +9,32 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [currentUrl, setCurrentUrl] = useState<string>('');
 
+  // Production URL - deployed on Vercel
+  const PRODUCTION_URL = 'https://dicom-viewer-beta.vercel.app';
+  
   // For development, use your local dev server URL
   // IMPORTANT: Make sure Vite is configured with host: '0.0.0.0' in vite.config.ts
   // For Android emulator, try 'http://10.0.2.2:5173' first, then fallback to local IP
   // For iOS simulator, 'http://localhost:5173' should work
   // For physical devices, use your computer's local IP (e.g., 'http://192.168.1.100:5173')
-  // For production, replace with your deployed URL
   
-  // Try multiple URLs for Android emulator
   const getWebViewerUrl = () => {
-    if (!__DEV__) {
-      return 'https://your-deployed-url.com';
-    }
+    // Always use production URL (Vercel deployment)
+    return PRODUCTION_URL;
     
-    if (Platform.OS === 'android') {
-      // Use your actual local IP address for Android emulator
-      // This is more reliable than 10.0.2.2 in some setups
-      // Update this IP if your network changes
-      return 'http://172.26.215.113:5173';
-      
-      // Alternative: Try 10.0.2.2 if the above doesn't work
-      // return 'http://10.0.2.2:5173';
-    } else if (Platform.OS === 'ios') {
-      return 'http://localhost:5173';
-    } else {
-      return 'http://localhost:5173';
-    }
+    // Uncomment below for local development
+    // if (__DEV__) {
+    //   if (Platform.OS === 'android') {
+    //     // Use your actual local IP address for Android emulator
+    //     // Update this IP if your network changes
+    //     return 'http://172.26.215.113:5173';
+    //   } else if (Platform.OS === 'ios') {
+    //     return 'http://localhost:5173';
+    //   } else {
+    //     return 'http://localhost:5173';
+    //   }
+    // }
+    // return PRODUCTION_URL;
   };
 
   const WEB_VIEWER_URL = getWebViewerUrl();
@@ -74,15 +74,12 @@ export default function App() {
           <Text style={styles.errorTitle}>Connection Error</Text>
           <Text style={styles.errorText}>{error}</Text>
           <Text style={styles.errorHint}>
-            Make sure:{'\n'}
-            1. The web server is running (npm run dev){'\n'}
-            2. Vite is configured with host: '0.0.0.0'{'\n'}
-            3. The URL is correct for your platform{'\n\n'}
+            Unable to connect to the DICOM viewer.{'\n\n'}
             Current URL: {WEB_VIEWER_URL}{'\n\n'}
-            For Android emulator, if 10.0.2.2 doesn't work:{'\n'}
-            - Find your local IP address{'\n'}
-            - Update App.tsx line with your IP{'\n'}
-            - Example: http://172.26.215.113:5173
+            Please check:{'\n'}
+            1. Your internet connection{'\n'}
+            2. The Vercel deployment is accessible{'\n'}
+            3. Try opening the URL in a browser first
           </Text>
         </View>
       )}
@@ -100,7 +97,7 @@ export default function App() {
           const { nativeEvent } = syntheticEvent;
           console.error('WebView error: ', nativeEvent);
           const errorMsg = nativeEvent.description || 'Connection error';
-          setError(`Failed to load: ${errorMsg}\n\nTrying: ${WEB_VIEWER_URL}\n\nIf using Android emulator and 10.0.2.2 doesn't work, try:\n1. Find your local IP: ip addr show (Linux) or ipconfig (Windows)\n2. Update App.tsx to use: http://YOUR_LOCAL_IP:5173`);
+          setError(`Failed to load: ${errorMsg}\n\nTrying: ${WEB_VIEWER_URL}\n\nPlease check your internet connection and ensure the Vercel deployment is accessible.`);
           setLoading(false);
         }}
         onHttpError={(syntheticEvent) => {
