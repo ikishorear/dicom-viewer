@@ -38,6 +38,7 @@ export default function App() {
   };
 
   const WEB_VIEWER_URL = getWebViewerUrl();
+  // const WEB_VIEWER_URL = 'http://192.168.0.143:5173/';
 
   // Inject CSS to ensure fullscreen experience
   const injectedJavaScript = `
